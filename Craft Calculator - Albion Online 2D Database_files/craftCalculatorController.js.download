@@ -220,7 +220,7 @@ app.controller('craftCalculatorController', function ($scope, $http, $timeout, $
         var p = [];
         $scope.pullMarketDataInProgress = true;
         $scope.shoppingList.forEach(function (item) {
-            p[p.length] = $http.get('https://www.albion-online-data.com/api/v1/stats/prices/:id'.replace(':id', item._marketplaceTitle)).then(function (response) {
+            p[p.length] = $http.get('https://east.albion-online-data.com/api/v1/stats/prices/:id'.replace(':id', item._marketplaceTitle)).then(function (response) {
                 response.data.forEach(function (price) {
                     if (price.city === $scope.marketCity) {
                         item._cost = price.sell_price_min;
