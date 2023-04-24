@@ -1,0 +1,278 @@
+var app = angular.module('ao2d');
+
+app.controller('craftCalculatorController', function ($scope, $http, $timeout, $q) {
+    var recentItemsFromStorage = [];
+    try {
+        recentItemsFromStorage = JSON.parse(localStorage.getItem('recentItems')) || [];
+    } catch (e) {
+        recentItemsFromStorage = [];
+    }
+    var initRecentItemsToDisplay = recentItemsFromStorage.slice().reverse();
+
+    $scope.premiumMultiplier = 1.5;
+
+    $scope.tiers = [];
+    $scope.filteredItems = [];
+    $scope.itemsToCraft = [];
+    $scope.craftToCraft = [];
+    $scope.shoppingList = [];
+    $scope.totalFee = 0;
+    $scope.totalShoppingCost = 0;
+    $scope.totalSum = 0;
+    $scope.totalFame = 0;
+    $scope.cachedItems = [];
+    $scope.recentItems = initRecentItemsToDisplay;
+    $scope.marketCity = 'Caerleon';
+
+    $scope.formatNumber = function (value) {
+        if (isNaN(value)) return value;
+
+        return new Intl.NumberFormat().format(value);
+    };
+
+    $scope.filters = {
+        q: null,
+        tier: 5,
+        category: null
+    };
+
+    for (var i = 1; i <= 8; i++) {
+        $scope.tiers.push({
+            value: i === 0 ? null : i,
+            label: i === 0 ? 'All' : 'T' + i,
+            selected: i === $scope.filters.tier
+        });
+    }
+
+    $scope.getItem = function (id) {
+        var defer = $q.defer();
+        var item = _.find($scope.cachedItems, ['_attr.uniquename', id]);
+        item = _.cloneDeep(item);
+        if (item) {
+            defer.resolve(item);
+            return defer.promise;
+        } else {
+            return $http.get('/:lang/craftcalculator/api/:id'.replace(':lang', LANG).replace(':id', id)).then(function (response) {
+                $scope.cachedItems.push(response.data);
+                return response.data;
+            });
+        }
+    };
+
+    $scope.search = function () {
+        $scope.filteredItems = [];
+        $http.get('/:lang/craftcalculator/api'.replace(':lang', LANG), {
+            params: $scope.filters
+        }).then(function (response) {
+            $scope.filteredItems = response.data;
+        });
+    };
+
+    $scope.selectTier = function (tier) {
+        _.find($scope.tiers, ['selected', true]).selected = false;
+        _.find($scope.tiers, ['value', tier.value]).selected = true;
+
+        $scope.filters.tier = tier.value;
+        $scope.search();
+    };
+
+    $scope.selectCategory = function (category) {
+        $scope.filters.category = category.id;
+        $scope.search();
+    };
+
+    $scope.addToCraftingList = function (item) {
+        $('#craft-modal').modal('hide');
+
+        $scope.getItem(item._attr.uniquename).then(function (item) {
+            var itemInScope = _.find($scope.itemsToCraft, ['_attr.uniquename', item._attr.uniquename]);
+
+            if (itemInScope) {
+                itemInScope._count++;
+            } else {
+                item._count = 1;
+                item._usageFee = 0;
+                item._calculatedFee = 0;
+                $scope.itemsToCraft.push(item);
+            }
+
+            var recentItem = {
+                _attr: {
+                    uniquename: item._attr.uniquename
+                },
+                title: item.title
+            };
+
+            recentItemsFromStorage.push(recentItem);
+            recentItemsFromStorage = _.uniqBy(recentItemsFromStorage, '_attr.uniquename');
+            recentItemsFromStorage = _.takeRight(recentItemsFromStorage, 10);
+            localStorage.setItem('recentItems', JSON.stringify(recentItemsFromStorage));
+
+            $scope.recentItems = recentItemsFromStorage.slice().reverse();
+            $scope.calculate();
+        });
+    };
+
+    $scope.removeFromCraftingList = function (item) {
+        _.remove($scope.itemsToCraft, ['_attr.uniquename', item._attr.uniquename]);
+        $scope.craftToCraft = [];
+        $scope.calculate();
+    };
+
+    $scope.addToCraftToCraftList = function (item) {
+        item._usageFee = 0;
+        $scope.craftToCraft.push(item);
+        $scope.calculate();
+    };
+
+    $scope.removeFromCraftToCraftList = function (item) {
+        _.remove($scope.craftToCraft, ['_attr.uniquename', item._attr.uniquename]);
+        $scope.calculate();
+    };
+
+    function inShoppingList(item) {
+        return _.find($scope.shoppingList, ['_attr.uniquename', item._attr.uniquename]);
+    }
+
+    function inCraftToCraft(item) {
+        return _.find($scope.craftToCraft, ['_attr.uniquename', item._attr.uniquename]);
+    }
+
+    function calculateShoppingList(parentItem) {
+        if (isNaN(parentItem._count)) return;
+        parentItem._count = parentItem._count * 1;
+        parentItem.craftingrequirements[0].craftresource.forEach(function (craftResource) {
+            var craftToCraft = inCraftToCraft(craftResource);
+            if (craftToCraft) {
+
+                if (inCraftToCraft(parentItem)) craftToCraft._count = craftResource._attr.count * parentItem._count;
+                else craftToCraft._count += craftResource._attr.count * parentItem._count;
+
+                calculateShoppingList(craftToCraft);
+            } else {
+                $scope.getItem(craftResource._attr.uniquename).then(function (item) {
+                    if (inCraftToCraft(parentItem) && inShoppingList(craftResource)) return;
+
+                    var count = craftResource._attr.count * parentItem._count;
+                    $scope.addToShoppingList(item, count);
+                    $scope.calculateShoppingListAttributes();
+                });
+            }
+        });
+    }
+
+    function resetCounters() {
+        $scope.craftToCraft = $scope.craftToCraft.map(function (item) {
+            item._count = 0;
+            return item;
+        });
+        $scope.shoppingList = $scope.shoppingList.map(function (item) {
+            item._count = 0;
+            return item;
+        });
+    }
+
+    function calculateItemsFee(item) {
+        return Math.ceil((item._calculatedItemValue * 0.1125 * item._usageFee) / 100);
+    }
+
+    function calculateFees() {
+        $scope.totalFee = 0;
+        $scope.itemsToCraft.forEach(function (item) {
+            item._calculatedFee = calculateItemsFee(item);
+            $scope.totalFee += item._calculatedFee;
+        });
+        $scope.craftToCraft.forEach(function (item) {
+            item._calculatedFee = calculateItemsFee(item);
+            $scope.totalFee += item._calculatedFee;
+        });
+    }
+
+    $scope.calculate = function () {
+        $scope.shoppingList = [];
+        $scope.totalFame = 0;
+        resetCounters();
+        $scope.itemsToCraft.forEach(function (item) {
+            calculateShoppingList(item);
+
+            $scope.totalFame += item._calculatedCraftFame * 1 * item._count;
+        });
+    };
+
+    $scope.calculateShoppingListAttributes = function () {
+        calculateFees();
+        $scope.totalShoppingCost = 0;
+        $scope.shoppingList.forEach(function (item) {
+            if (isNaN(item._have)) item._have = 0;
+
+            item._have = item._have || 0;
+            item._have = item._have * 1;
+            item._cost = item._cost || 0;
+            item._cost = item._cost * 1;
+            item._totalRequired = item._count <= item._have ? 0 : item._count - item._have;
+            item._totalCost = item._cost * item._totalRequired;
+            $scope.totalShoppingCost += item._totalCost * 1;
+        });
+        $scope.totalSum = $scope.totalFee + $scope.totalShoppingCost;
+    };
+
+    $scope.pullMarketData = function () {
+        var p = [];
+        $scope.pullMarketDataInProgress = true;
+        $scope.shoppingList.forEach(function (item) {
+            p[p.length] = $http.get('https://www.albion-online-data.com/api/v1/stats/prices/:id'.replace(':id', item._marketplaceTitle)).then(function (response) {
+                response.data.forEach(function (price) {
+                    if (price.city === $scope.marketCity) {
+                        item._cost = price.sell_price_min;
+                        item._totalCost = item._cost * item._totalRequired;
+                    }
+                });
+            }).catch(function () {
+                item._totalCost = item._cost * item._totalRequired;
+            });
+        });
+
+        $q.all(p).then(function (result) {
+            $scope.pullMarketDataInProgress = false;
+            $scope.calculateShoppingListAttributes();
+        });
+    };
+
+    $scope.addToShoppingList = function (item, count) {
+        item._count = parseInt(count);
+        var existing = inShoppingList(item);
+        if (existing) existing._count += item._count;
+        else $scope.shoppingList.push(item);
+    };
+
+    $scope.init = function (config) {
+        if (config.item) $scope.addToCraftingList(config.item);
+
+        $('#categories').treeview({
+            data: config.categoriesTree,
+            // enableLinks: true,
+            levels: 1,
+            expandIcon: 'ion-plus-round',
+            collapseIcon: 'ion-minus-round',
+            onNodeSelected: function (event, node) {
+                $scope.selectCategory(node);
+            },
+            onNodeUnselected: function (event, node) {
+                $scope.selectCategory({id: null});
+            }
+        });
+
+        //@TODO: for debug convenience
+        // var a = [];
+        // $scope.recentItems.forEach(function (item) {
+        //     a[a.length] = $scope.getItem(item._attr.uniquename).then(function (item) {
+        //         item._count = 1;
+        //         $scope.itemsToCraft.push(item);
+        //     });
+        // });
+        //
+        // Promise.all(a).then(function () {
+        //     $scope.calculate();
+        // });
+    };
+});
